@@ -1,0 +1,5 @@
+development:
+  adapter: sqlite3
+  database: db/app_store_reviews.sqlite3
+  pool: 5
+  timeout: 5000

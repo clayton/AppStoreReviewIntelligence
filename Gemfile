@@ -1,0 +1,11 @@
+source 'https://rubygems.org'
+
+gem 'sqlite3'
+gem 'httparty'
+gem 'nokogiri'
+gem 'open_router'
+gem 'thor'
+gem 'activerecord'
+gem 'activesupport'
+gem 'standalone_migrations'
+gem 'dotenv'
