@@ -54,6 +54,11 @@ class AppStoreReviews
     reviews.select { |r| r[:rating] && r[:rating] <= 2 }
   end
   
+  def fetch_high_rating_reviews(app_id, country = 'us', max_pages = 10)
+    reviews = fetch_reviews(app_id, country, max_pages)
+    reviews.select { |r| r[:rating] && r[:rating] >= 4 }
+  end
+  
   private
   
   def parse_review_entry(entry, app_id)

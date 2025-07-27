@@ -5,5 +5,6 @@ class Review < ActiveRecord::Base
   validates :rating, inclusion: { in: 1..5 }
   
   scope :low_rating, -> { where(rating: [1, 2]) }
+  scope :high_rating, -> { where(rating: [4, 5]) }
   scope :recent, -> { order(published_at: :desc) }
 end

@@ -55,6 +55,66 @@ class ReviewAggregator
     }
   end
   
+  def aggregate_all_reviews(keyword, limit = 10)
+    puts "Searching for top #{limit} apps for keyword: #{keyword}"
+    
+    # Search for apps
+    apps_data = @search_client.search(keyword, limit)
+    
+    if apps_data.empty?
+      puts "No apps found for keyword: #{keyword}"
+      return { apps: [], low_reviews: [], high_reviews: [], keyword: keyword }
+    end
+    
+    # Save or update apps in database
+    apps = save_apps(apps_data)
+    
+    all_low_reviews = []
+    all_high_reviews = []
+    
+    # Fetch reviews for each app
+    apps.each_with_index do |app, index|
+      puts "\nFetching reviews for #{app.name} (#{index + 1}/#{apps.length})..."
+      
+      # Check if we have recent reviews cached
+      if should_fetch_new_reviews?(app)
+        # Fetch low rating reviews
+        low_reviews_data = @reviews_client.fetch_low_rating_reviews(app.app_id)
+        if low_reviews_data.any?
+          saved_low_reviews = save_reviews(app, low_reviews_data)
+          all_low_reviews.concat(saved_low_reviews)
+          puts "Found #{saved_low_reviews.length} low-rating reviews"
+        end
+        
+        # Fetch high rating reviews
+        high_reviews_data = @reviews_client.fetch_high_rating_reviews(app.app_id)
+        if high_reviews_data.any?
+          saved_high_reviews = save_reviews(app, high_reviews_data)
+          all_high_reviews.concat(saved_high_reviews)
+          puts "Found #{saved_high_reviews.length} high-rating reviews"
+        end
+      else
+        # Use cached reviews
+        cached_low_reviews = app.reviews.low_rating.to_a
+        all_low_reviews.concat(cached_low_reviews)
+        puts "Using #{cached_low_reviews.length} cached low-rating reviews"
+        
+        cached_high_reviews = app.reviews.high_rating.to_a
+        all_high_reviews.concat(cached_high_reviews)
+        puts "Using #{cached_high_reviews.length} cached high-rating reviews"
+      end
+    end
+    
+    {
+      apps: apps,
+      low_reviews: all_low_reviews,
+      high_reviews: all_high_reviews,
+      keyword: keyword,
+      total_low_reviews: all_low_reviews.length,
+      total_high_reviews: all_high_reviews.length
+    }
+  end
+  
   private
   
   def save_apps(apps_data)

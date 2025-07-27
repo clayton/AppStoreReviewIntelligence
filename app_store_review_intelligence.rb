@@ -23,7 +23,7 @@ require_relative 'lib/review_aggregator'
 require_relative 'lib/llm_analyzer'
 
 class AppStoreReviewIntelligenceCLI < Thor
-  desc "analyze KEYWORD", "Analyze negative reviews for top apps matching KEYWORD"
+  desc "analyze KEYWORD", "Analyze all reviews for top apps matching KEYWORD (negative + positive)"
   option :limit, type: :numeric, default: 10, desc: "Number of top apps to analyze"
   option :country, type: :string, default: 'us', desc: "App Store country code"
   option :model, type: :string, default: LLMAnalyzer::DEFAULT_MODEL, desc: "OpenRouter model to use"
@@ -42,35 +42,73 @@ class AppStoreReviewIntelligenceCLI < Thor
     
     # Aggregate reviews
     aggregator = ReviewAggregator.new
-    result = aggregator.aggregate_low_rating_reviews(keyword, options[:limit])
+    result = aggregator.aggregate_all_reviews(keyword, options[:limit])
     
-    if result[:reviews].empty?
-      puts "\n❌ No negative reviews found for keyword: #{keyword}"
+    if result[:low_reviews].empty? && result[:high_reviews].empty?
+      puts "\n❌ No reviews found for keyword: #{keyword}"
       exit 1
     end
     
     puts "\n📊 Summary:"
     puts "- Found #{result[:apps].length} apps"
-    puts "- Collected #{result[:total_reviews]} negative reviews"
+    puts "- Collected #{result[:total_low_reviews]} negative reviews (1-2 stars)"
+    puts "- Collected #{result[:total_high_reviews]} positive reviews (4-5 stars)"
     
     # Check for recent analysis
-    recent_analysis = find_recent_analysis(keyword, result[:total_reviews])
+    recent_analysis = find_recent_comprehensive_analysis(keyword, result[:total_low_reviews], result[:total_high_reviews])
     
     if recent_analysis && !options[:force]
       puts "\n📋 Using cached analysis from #{recent_analysis.created_at.strftime('%Y-%m-%d %H:%M')}"
-      analysis = {
-        llm_analysis: recent_analysis.llm_analysis,
-        patterns: recent_analysis.patterns,
-        opportunities: recent_analysis.opportunities,
-        summary: extract_summary_from_analysis(recent_analysis),
-        total_reviews_analyzed: recent_analysis.total_reviews_analyzed,
-        llm_model: recent_analysis.llm_model
-      }
+      
+      # Extract comprehensive analysis data from cached result
+      begin
+        json_match = recent_analysis.llm_analysis.match(/\{.*\}/m)
+        if json_match
+          parsed = JSON.parse(json_match[0])
+          analysis = {
+            llm_analysis: recent_analysis.llm_analysis,
+            table_stakes: parsed['table_stakes'] || [],
+            pain_points: parsed['pain_points'] || recent_analysis.patterns || [],
+            differentiators: parsed['differentiators'] || recent_analysis.opportunities || [],
+            competitive_summary: parsed['competitive_summary'] || {},
+            summary: parsed['summary'] || extract_summary_from_analysis(recent_analysis),
+            total_low_reviews_analyzed: parsed['total_low_reviews_analyzed'] || 0,
+            total_high_reviews_analyzed: parsed['total_high_reviews_analyzed'] || 0,
+            llm_model: recent_analysis.llm_model
+          }
+        else
+          # Fallback for malformed cache
+          analysis = {
+            llm_analysis: recent_analysis.llm_analysis,
+            table_stakes: [],
+            pain_points: recent_analysis.patterns || [],
+            differentiators: recent_analysis.opportunities || [],
+            competitive_summary: {},
+            summary: extract_summary_from_analysis(recent_analysis),
+            total_low_reviews_analyzed: 0,
+            total_high_reviews_analyzed: 0,
+            llm_model: recent_analysis.llm_model
+          }
+        end
+      rescue JSON::ParserError
+        # Fallback for JSON parsing errors
+        analysis = {
+          llm_analysis: recent_analysis.llm_analysis,
+          table_stakes: [],
+          pain_points: recent_analysis.patterns || [],
+          differentiators: recent_analysis.opportunities || [],
+          competitive_summary: {},
+          summary: extract_summary_from_analysis(recent_analysis),
+          total_low_reviews_analyzed: 0,
+          total_high_reviews_analyzed: 0,
+          llm_model: recent_analysis.llm_model
+        }
+      end
     else
       # Analyze with LLM
       puts "\n🤖 Analyzing reviews with AI..."
       analyzer = LLMAnalyzer.new
-      analysis = analyzer.analyze_reviews(result[:reviews], keyword, options[:model])
+      analysis = analyzer.analyze_all_reviews(result[:low_reviews], result[:high_reviews], keyword, options[:model])
       
       if analysis[:error]
         puts "\n❌ Analysis failed: #{analysis[:error]}"
@@ -78,11 +116,11 @@ class AppStoreReviewIntelligenceCLI < Thor
       end
       
       # Save analysis
-      save_analysis(keyword, analysis)
+      save_comprehensive_analysis(keyword, analysis)
     end
     
     # Display results
-    display_analysis(analysis)
+    display_comprehensive_analysis(analysis)
   end
   
   desc "history KEYWORD", "Show past analyses for KEYWORD"
@@ -148,6 +186,51 @@ class AppStoreReviewIntelligenceCLI < Thor
   
   private
   
+  def find_recent_comprehensive_analysis(keyword, current_low_count, current_high_count)
+    # Find the most recent analysis for this keyword
+    recent = Analysis.where(keyword: keyword)
+                     .where('created_at > ?', 3.days.ago)
+                     .order(created_at: :desc)
+                     .first
+    
+    return nil unless recent
+    
+    # For backward compatibility, check if it's a comprehensive analysis
+    return nil unless recent.llm_analysis&.include?('table_stakes')
+    
+    # Extract review counts from the analysis
+    total_reviews = (recent.total_reviews_analyzed || 0).to_i
+    
+    # If old format, can't compare properly
+    return nil if total_reviews > 0 && !recent.llm_analysis.include?('total_low_reviews_analyzed')
+    
+    # For new comprehensive analyses, check both counts
+    if recent.llm_analysis.include?('total_low_reviews_analyzed')
+      # Try to extract counts from the stored analysis
+      begin
+        json_match = recent.llm_analysis.match(/\{.*\}/m)
+        if json_match
+          parsed = JSON.parse(json_match[0])
+          stored_low = parsed['total_low_reviews_analyzed'] || 0
+          stored_high = parsed['total_high_reviews_analyzed'] || 0
+          
+          # Check if counts haven't changed much (>10% difference)
+          low_diff = (current_low_count - stored_low).abs
+          high_diff = (current_high_count - stored_high).abs
+          
+          low_percentage = stored_low > 0 ? low_diff.to_f / stored_low * 100 : 100
+          high_percentage = stored_high > 0 ? high_diff.to_f / stored_high * 100 : 100
+          
+          return recent if low_percentage <= 10 && high_percentage <= 10
+        end
+      rescue
+        # If parsing fails, don't use cached analysis
+      end
+    end
+    
+    nil
+  end
+  
   def find_recent_analysis(keyword, current_review_count)
     # Find the most recent analysis for this keyword
     recent = Analysis.where(keyword: keyword)
@@ -210,6 +293,19 @@ class AppStoreReviewIntelligenceCLI < Thor
     )
   end
   
+  def save_comprehensive_analysis(keyword, analysis)
+    # Store comprehensive analysis with additional fields
+    # We'll store table stakes and differentiators in the patterns/opportunities for backward compatibility
+    Analysis.create!(
+      keyword: keyword,
+      llm_analysis: analysis[:llm_analysis],
+      patterns: analysis[:pain_points] || analysis[:patterns] || [],
+      opportunities: analysis[:differentiators] || analysis[:opportunities] || [],
+      total_reviews_analyzed: (analysis[:total_low_reviews_analyzed] || 0) + (analysis[:total_high_reviews_analyzed] || 0),
+      llm_model: analysis[:llm_model]
+    )
+  end
+  
   def display_analysis(analysis)
     puts "\n✨ Analysis Results"
     puts "=" * 50
@@ -249,6 +345,72 @@ class AppStoreReviewIntelligenceCLI < Thor
     
     puts "\n" + "=" * 50
     puts "Reviews analyzed: #{analysis[:total_reviews_analyzed]}"
+    puts "Model used: #{analysis[:llm_model]}"
+  end
+  
+  def display_comprehensive_analysis(analysis)
+    puts "\n✨ Comprehensive Analysis Results"
+    puts "=" * 50
+    
+    if analysis[:summary]
+      puts "\n📝 Executive Summary:"
+      puts analysis[:summary]
+    end
+    
+    # Display table stakes features
+    if analysis[:table_stakes] && analysis[:table_stakes].any?
+      puts "\n🏛️ Table Stakes Features (What You Need to Fit In):"
+      analysis[:table_stakes].each_with_index do |stake, index|
+        puts "\n#{index + 1}. #{stake['feature']}"
+        puts "   #{stake['description']}"
+        puts "   Evidence: #{stake['evidence']}" if stake['evidence']
+      end
+    end
+    
+    # Display pain points
+    if analysis[:pain_points] && analysis[:pain_points].any?
+      puts "\n🔍 Common Pain Points:"
+      analysis[:pain_points].each_with_index do |pain, index|
+        puts "\n#{index + 1}. #{pain['category']}"
+        puts "   #{pain['description']}"
+        puts "   Frequency: #{pain['frequency']}" if pain['frequency']
+      end
+    end
+    
+    # Display differentiators
+    if analysis[:differentiators] && analysis[:differentiators].any?
+      puts "\n💡 Differentiation Opportunities:"
+      analysis[:differentiators].each_with_index do |diff, index|
+        puts "\n#{index + 1}. #{diff['opportunity']}"
+        puts "   #{diff['description']}"
+        puts "   Rationale: #{diff['rationale']}" if diff['rationale']
+      end
+    end
+    
+    # Display competitive summary
+    if analysis[:competitive_summary] && analysis[:competitive_summary].any?
+      puts "\n🎯 Competitive Positioning Summary:"
+      puts "=" * 40
+      
+      if analysis[:competitive_summary]['top_3_table_stakes']
+        puts "\n✅ Top 3 Features to FIT IN (Table Stakes):"
+        analysis[:competitive_summary]['top_3_table_stakes'].each_with_index do |feature, index|
+          puts "   #{index + 1}. #{feature}"
+        end
+      end
+      
+      if analysis[:competitive_summary]['top_3_differentiators']
+        puts "\n🚀 Top 3 Features to STAND OUT (Differentiators):"
+        analysis[:competitive_summary]['top_3_differentiators'].each_with_index do |feature, index|
+          puts "   #{index + 1}. #{feature}"
+        end
+      end
+    end
+    
+    puts "\n" + "=" * 50
+    puts "Low-rating reviews analyzed: #{analysis[:total_low_reviews_analyzed] || 0}"
+    puts "High-rating reviews analyzed: #{analysis[:total_high_reviews_analyzed] || 0}"
+    puts "Total reviews analyzed: #{(analysis[:total_low_reviews_analyzed] || 0) + (analysis[:total_high_reviews_analyzed] || 0)}"
     puts "Model used: #{analysis[:llm_model]}"
   end
 end
