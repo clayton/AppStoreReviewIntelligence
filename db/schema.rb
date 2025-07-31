@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_07_23_180253) do
+ActiveRecord::Schema[8.0].define(version: 2025_07_30_171502) do
   create_table "analyses", force: :cascade do |t|
     t.string "keyword", null: false
     t.text "llm_analysis"
@@ -62,5 +62,17 @@ ActiveRecord::Schema[8.0].define(version: 2025_07_23_180253) do
     t.index ["review_id"], name: "index_reviews_on_review_id", unique: true
   end
 
+  create_table "screenshot_analyses", force: :cascade do |t|
+    t.integer "app_id", null: false
+    t.integer "screenshot_count"
+    t.text "analysis"
+    t.json "screenshot_urls"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["app_id"], name: "index_screenshot_analyses_on_app_id"
+    t.index ["created_at"], name: "index_screenshot_analyses_on_created_at"
+  end
+
   add_foreign_key "reviews", "apps"
+  add_foreign_key "screenshot_analyses", "apps"
 end
