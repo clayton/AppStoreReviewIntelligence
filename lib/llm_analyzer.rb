@@ -83,6 +83,42 @@ class LLMAnalyzer
     end
   end
   
+  def generate_simple_summary(research_data, simple_prompt, model = DEFAULT_MODEL)
+    return { error: "No research data provided" } if research_data.nil? || research_data.empty?
+    
+    full_prompt = "#{simple_prompt}\n\nRESEARCH DATA:\n#{research_data}"
+    
+    begin
+      messages = [
+        {
+          role: "system",
+          content: "You are a concise business analyst who explains complex market research in simple, direct language."
+        },
+        {
+          role: "user",
+          content: full_prompt
+        }
+      ]
+      
+      response = @client.complete(messages, 
+        model: model,
+        extras: {
+          temperature: 0.5  # Lower temperature for more focused output
+        }
+      )
+      
+      if ENV['DEBUG']
+        puts "\nDEBUG: Simple Summary LLM Response class: #{response.class}"
+        puts "DEBUG: Simple Summary LLM Response keys: #{response.keys rescue 'N/A'}"
+        puts "DEBUG: Simple Summary LLM Response sample: #{response.inspect[0..500]}"
+      end
+      
+      parse_simple_summary_response(response, model)
+    rescue => e
+      { error: "Simple summary generation failed: #{e.message}" }
+    end
+  end
+  
   private
   
   def build_comprehensive_analysis_prompt(low_reviews, high_reviews, keyword)
@@ -322,5 +358,28 @@ class LLMAnalyzer
         llm_model: model
       }
     end
+  end
+  
+  def parse_simple_summary_response(response, model)
+    # Handle OpenRouter response format
+    content = if response.is_a?(String)
+      response
+    elsif response.is_a?(Hash)
+      response.dig('choices', 0, 'message', 'content') || 
+      response.dig(:choices, 0, :message, :content) ||
+      response['message'] || 
+      response[:message] ||
+      response.to_s
+    else
+      response.to_s
+    end
+    
+    puts "DEBUG: Simple Summary Content (first 500 chars): #{content[0..500]}" if content && ENV['DEBUG']
+    
+    # For simple summary, we just return the content as-is since it should be plain text
+    {
+      summary: content&.strip,
+      llm_model: model
+    }
   end
 end

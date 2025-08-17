@@ -28,6 +28,7 @@ class AppStoreReviewIntelligenceCLI < Thor
   option :country, type: :string, default: 'us', desc: "App Store country code"
   option :model, type: :string, default: LLMAnalyzer::DEFAULT_MODEL, desc: "OpenRouter model to use"
   option :force, type: :boolean, default: false, desc: "Force fresh fetch of reviews"
+  option :simple, type: :boolean, default: false, desc: "Generate additional simplified summary"
   def analyze(keyword)
     ensure_api_key!
     
@@ -121,6 +122,13 @@ class AppStoreReviewIntelligenceCLI < Thor
     
     # Display results
     display_comprehensive_analysis(analysis)
+    
+    # Generate and display simple summary if requested
+    if options[:simple]
+      puts "\n🔄 Generating simplified summary..."
+      simple_summary = generate_simple_summary(analysis, options[:model])
+      display_simple_summary(simple_summary) if simple_summary
+    end
   end
   
   desc "history KEYWORD", "Show past analyses for KEYWORD"
@@ -185,6 +193,96 @@ class AppStoreReviewIntelligenceCLI < Thor
   end
   
   private
+  
+  def generate_simple_summary(analysis, model)
+    # Read the simple summary prompt
+    prompt_path = File.join(__dir__, 'simple_summary_prompt.txt')
+    
+    unless File.exist?(prompt_path)
+      puts "\n❌ Error: simple_summary_prompt.txt not found"
+      return nil
+    end
+    
+    simple_prompt = File.read(prompt_path)
+    
+    # Prepare the research data for the simple summary
+    research_data = prepare_research_data_for_simple_summary(analysis)
+    
+    # Use LLMAnalyzer to generate simple summary
+    analyzer = LLMAnalyzer.new
+    result = analyzer.generate_simple_summary(research_data, simple_prompt, model)
+    
+    if result[:error]
+      puts "\n❌ Simple summary generation failed: #{result[:error]}"
+      return nil
+    end
+    
+    result[:summary]
+  end
+  
+  def prepare_research_data_for_simple_summary(analysis)
+    research_text = ""
+    
+    # Add executive summary
+    if analysis[:summary]
+      research_text += "EXECUTIVE SUMMARY:\n#{analysis[:summary]}\n\n"
+    end
+    
+    # Add table stakes features
+    if analysis[:table_stakes] && analysis[:table_stakes].any?
+      research_text += "TABLE STAKES FEATURES (What You Need to Fit In):\n"
+      analysis[:table_stakes].each_with_index do |stake, index|
+        research_text += "#{index + 1}. #{stake['feature']}: #{stake['description']}\n"
+      end
+      research_text += "\n"
+    end
+    
+    # Add pain points
+    if analysis[:pain_points] && analysis[:pain_points].any?
+      research_text += "COMMON PAIN POINTS:\n"
+      analysis[:pain_points].each_with_index do |pain, index|
+        research_text += "#{index + 1}. #{pain['category']}: #{pain['description']}\n"
+      end
+      research_text += "\n"
+    end
+    
+    # Add differentiators
+    if analysis[:differentiators] && analysis[:differentiators].any?
+      research_text += "DIFFERENTIATION OPPORTUNITIES:\n"
+      analysis[:differentiators].each_with_index do |diff, index|
+        research_text += "#{index + 1}. #{diff['opportunity']}: #{diff['description']}\n"
+      end
+      research_text += "\n"
+    end
+    
+    # Add competitive summary
+    if analysis[:competitive_summary] && analysis[:competitive_summary].any?
+      if analysis[:competitive_summary]['top_3_table_stakes']
+        research_text += "TOP 3 FEATURES TO FIT IN:\n"
+        analysis[:competitive_summary]['top_3_table_stakes'].each_with_index do |feature, index|
+          research_text += "#{index + 1}. #{feature}\n"
+        end
+        research_text += "\n"
+      end
+      
+      if analysis[:competitive_summary]['top_3_differentiators']
+        research_text += "TOP 3 FEATURES TO STAND OUT:\n"
+        analysis[:competitive_summary]['top_3_differentiators'].each_with_index do |feature, index|
+          research_text += "#{index + 1}. #{feature}\n"
+        end
+        research_text += "\n"
+      end
+    end
+    
+    research_text
+  end
+  
+  def display_simple_summary(summary)
+    puts "\n📋 Simple Market Analysis Summary"
+    puts "=" * 50
+    puts summary
+    puts "=" * 50
+  end
   
   def find_recent_comprehensive_analysis(keyword, current_low_count, current_high_count)
     # Find the most recent analysis for this keyword

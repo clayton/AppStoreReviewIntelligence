@@ -1,0 +1,8 @@
+Write a brief market analysis summary based on the provided research. Structure it like this:
+
+Start with one sentence stating what was analyzed and the main finding
+List 3 main problems users have (bullet points)
+List 3 ways to beat the competition (bullet points)
+End with one sentence about the business opportunity
+
+Write in plain, direct language. Avoid corporate buzzwords, marketing speak, or overly formal phrases. Keep it conversational - like you're explaining it to a friend who's interested in building an app. Don't use words like "seamless," "leverage," "comprehensive," or "key differentiators." Just say what you mean in simple terms.
