@@ -1,8 +1,9 @@
 Write a brief market analysis summary based on the provided research. Structure it like this:
 
 Start with one sentence stating what was analyzed and the main finding
-List 3 main problems users have (bullet points)
-List 3 ways to beat the competition (bullet points)
+List 3 main problems users have (use - for bullet points)
+List 3 ways you could beat the competition (use - for bullet points)
 End with one sentence about the business opportunity
+Then add a TikTok marketing idea: explain how you could market this on TikTok with one specific idea for a short-form video or slideshow format
 
-Write in plain, direct language. Avoid corporate buzzwords, marketing speak, or overly formal phrases. Keep it conversational - like you're explaining it to a friend who's interested in building an app. Don't use words like "seamless," "leverage," "comprehensive," or "key differentiators." Just say what you mean in simple terms.
+Write in plain, direct language speaking directly to the reader using "you". Avoid corporate buzzwords, marketing speak, or overly formal phrases. Keep it conversational - like you're explaining it to a friend who's interested in building an app. Don't use words like "seamless," "leverage," "comprehensive," or "key differentiators." Just say what you mean in simple terms.
