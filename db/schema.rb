@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_07_30_171502) do
+ActiveRecord::Schema[8.0].define(version: 2025_12_28_130000) do
   create_table "analyses", force: :cascade do |t|
     t.string "keyword", null: false
     t.text "llm_analysis"
@@ -20,6 +20,9 @@ ActiveRecord::Schema[8.0].define(version: 2025_07_30_171502) do
     t.string "llm_model"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.json "personas", default: []
+    t.json "raw_persona_extractions", default: []
+    t.json "insider_language", default: {}
     t.index ["created_at"], name: "index_analyses_on_created_at"
     t.index ["keyword"], name: "index_analyses_on_keyword"
   end
@@ -43,6 +46,22 @@ ActiveRecord::Schema[8.0].define(version: 2025_07_30_171502) do
     t.index ["app_id", "keyword"], name: "index_apps_on_app_id_and_keyword", unique: true
     t.index ["app_id"], name: "index_apps_on_app_id"
     t.index ["keyword"], name: "index_apps_on_keyword"
+  end
+
+  create_table "aso_analyses", force: :cascade do |t|
+    t.integer "app_id", null: false
+    t.string "keyword", null: false
+    t.integer "competitor_count", null: false
+    t.json "competitor_app_ids"
+    t.text "llm_analysis"
+    t.json "recommendations"
+    t.string "llm_model"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["app_id", "keyword"], name: "index_aso_analyses_on_app_id_and_keyword"
+    t.index ["app_id"], name: "index_aso_analyses_on_app_id"
+    t.index ["created_at"], name: "index_aso_analyses_on_created_at"
+    t.index ["keyword"], name: "index_aso_analyses_on_keyword"
   end
 
   create_table "reviews", force: :cascade do |t|
@@ -73,6 +92,7 @@ ActiveRecord::Schema[8.0].define(version: 2025_07_30_171502) do
     t.index ["created_at"], name: "index_screenshot_analyses_on_created_at"
   end
 
+  add_foreign_key "aso_analyses", "apps"
   add_foreign_key "reviews", "apps"
   add_foreign_key "screenshot_analyses", "apps"
 end

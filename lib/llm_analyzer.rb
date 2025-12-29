@@ -2,7 +2,7 @@ require 'open_router'
 require 'json'
 
 class LLMAnalyzer
-  DEFAULT_MODEL = 'google/gemini-2.5-pro'
+  DEFAULT_MODEL = 'google/gemini-3-pro-preview'
   
   def initialize
     @client = OpenRouter::Client.new(
@@ -118,9 +118,163 @@ class LLMAnalyzer
       { error: "Simple summary generation failed: #{e.message}" }
     end
   end
-  
+
+  def normalize_personas(raw_extractions, keyword, model = DEFAULT_MODEL)
+    return { personas: [], llm_model: model } if raw_extractions.empty?
+
+    # Limit to top 50 phrases to avoid token limits
+    limited_extractions = raw_extractions.first(50)
+
+    phrases_list = limited_extractions.map do |extraction|
+      "- \"#{extraction[:phrase]}\" (mentioned #{extraction[:count]} times)"
+    end.join("\n")
+
+    prompt = <<~PROMPT
+      You are analyzing self-identifying phrases extracted from app reviews for the keyword "#{keyword}".
+
+      These phrases were found when users said things like "As a busy mom..." or "I'm a night shift nurse...".
+
+      Here are the extracted phrases with their frequency counts:
+
+      #{phrases_list}
+
+      Your task:
+      1. Group similar phrases into persona categories (e.g., "busy mom", "working mother", "parent of 3" -> "Busy Parents")
+      2. Name each category descriptively but concisely
+      3. For each category, provide:
+         - A descriptive category name
+         - Total count (sum of grouped phrase counts)
+         - List of the original phrases that belong to this category
+         - One-sentence description of this user type and why they use apps like this
+      4. Filter out phrases that are NOT actually user personas (e.g., "a long time", "a few days")
+      5. Return the top 10 personas by frequency
+
+      Format your response as valid JSON:
+      {
+        "personas": [
+          {
+            "category": "Busy Parents",
+            "count": 15,
+            "examples": ["busy mom", "working dad", "parent of two"],
+            "description": "Parents juggling work and family who need quick, efficient solutions"
+          }
+        ]
+      }
+    PROMPT
+
+    begin
+      messages = [
+        {
+          role: "system",
+          content: "You are an expert marketing analyst specializing in customer persona identification and segmentation."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
+
+      response = @client.complete(messages,
+        model: model,
+        extras: {
+          temperature: 0.5
+        }
+      )
+
+      if ENV['DEBUG']
+        puts "\nDEBUG: Persona Normalization Response class: #{response.class}"
+        puts "DEBUG: Persona Normalization Response sample: #{response.inspect[0..500]}"
+      end
+
+      parse_persona_response(response, model)
+    rescue => e
+      { error: "Persona normalization failed: #{e.message}", personas: [], llm_model: model }
+    end
+  end
+
+  def analyze_insider_language(reviews, keyword, model = DEFAULT_MODEL)
+    return { insider_language: {}, llm_model: model } if reviews.empty?
+
+    # Limit reviews and prepare text
+    limited_reviews = reviews.first(100)
+
+    reviews_text = limited_reviews.map do |review|
+      content = review.respond_to?(:content) ? review.content : review[:content]
+      title = review.respond_to?(:title) ? review.title : review[:title]
+      rating = review.respond_to?(:rating) ? review.rating : review[:rating]
+
+      content = content.to_s
+      content = content[0..300] + "..." if content.length > 300
+
+      "Rating: #{rating}/5\nTitle: #{title}\nReview: #{content}\n---"
+    end.join("\n\n")
+
+    prompt = <<~PROMPT
+      Analyze the following customer reviews for "#{keyword}" apps and identify **insider phrases, in-group language, running jokes, shorthand, or repeated expressions** that real customers use.
+
+      Focus on:
+      - Phrases that would sound *weird or confusing* to an outsider
+      - Recurring jokes, exaggerations, or sarcastic lines
+      - Shorthand, nicknames, or terms customers use instead of formal product names
+      - Emotionally loaded phrases customers repeat verbatim or almost verbatim
+      - "If you know, you know" language that signals belonging
+
+      If no strong insider language exists, explicitly say so and explain **what that signals about the category or audience maturity**.
+
+      Use only the language found in the reviews. Do not invent phrases.
+
+      REVIEWS:
+
+      #{reviews_text}
+
+      Format your response as valid JSON:
+      {
+        "has_insider_language": true/false,
+        "insider_phrases": [
+          {
+            "phrase": "the exact phrase or expression",
+            "type": "joke|shorthand|nickname|emotional|in-group",
+            "context": "Brief explanation of what this means and why it's insider language",
+            "frequency": "How often variations of this appear"
+          }
+        ],
+        "category_insight": "If no strong insider language exists, explain what that signals about the category or audience maturity. If insider language exists, explain what it reveals about the community.",
+        "marketing_implications": "How could a marketer use these phrases authentically in ads or copy?"
+      }
+    PROMPT
+
+    begin
+      messages = [
+        {
+          role: "system",
+          content: "You are an expert linguistic analyst specializing in community language patterns, slang identification, and cultural insider knowledge."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
+
+      response = @client.complete(messages,
+        model: model,
+        extras: {
+          temperature: 0.5
+        }
+      )
+
+      if ENV['DEBUG']
+        puts "\nDEBUG: Insider Language Response class: #{response.class}"
+        puts "DEBUG: Insider Language Response sample: #{response.inspect[0..500]}"
+      end
+
+      parse_insider_language_response(response, model)
+    rescue => e
+      { error: "Insider language analysis failed: #{e.message}", insider_language: {}, llm_model: model }
+    end
+  end
+
   private
-  
+
   def build_comprehensive_analysis_prompt(low_reviews, high_reviews, keyword)
     # Limit reviews to avoid token limits
     limited_low_reviews = low_reviews.first(30)
@@ -365,21 +519,96 @@ class LLMAnalyzer
     content = if response.is_a?(String)
       response
     elsif response.is_a?(Hash)
-      response.dig('choices', 0, 'message', 'content') || 
+      response.dig('choices', 0, 'message', 'content') ||
       response.dig(:choices, 0, :message, :content) ||
-      response['message'] || 
+      response['message'] ||
       response[:message] ||
       response.to_s
     else
       response.to_s
     end
-    
+
     puts "DEBUG: Simple Summary Content (first 500 chars): #{content[0..500]}" if content && ENV['DEBUG']
-    
+
     # For simple summary, we just return the content as-is since it should be plain text
     {
       summary: content&.strip,
       llm_model: model
     }
+  end
+
+  def parse_persona_response(response, model)
+    content = if response.is_a?(String)
+      response
+    elsif response.is_a?(Hash)
+      response.dig('choices', 0, 'message', 'content') ||
+      response.dig(:choices, 0, :message, :content) ||
+      response['message'] ||
+      response[:message] ||
+      response.to_s
+    else
+      response.to_s
+    end
+
+    puts "DEBUG: Persona Content (first 500 chars): #{content[0..500]}" if content && ENV['DEBUG']
+
+    # Remove markdown code blocks if present
+    content = content.gsub(/```json\s*/, '').gsub(/```\s*$/, '') if content.include?('```')
+
+    json_match = content.match(/\{.*\}/m)
+
+    if json_match
+      begin
+        parsed = JSON.parse(json_match[0])
+        {
+          personas: parsed['personas'] || [],
+          llm_model: model
+        }
+      rescue JSON::ParserError
+        { personas: [], llm_model: model }
+      end
+    else
+      { personas: [], llm_model: model }
+    end
+  end
+
+  def parse_insider_language_response(response, model)
+    content = if response.is_a?(String)
+      response
+    elsif response.is_a?(Hash)
+      response.dig('choices', 0, 'message', 'content') ||
+      response.dig(:choices, 0, :message, :content) ||
+      response['message'] ||
+      response[:message] ||
+      response.to_s
+    else
+      response.to_s
+    end
+
+    puts "DEBUG: Insider Language Content (first 500 chars): #{content[0..500]}" if content && ENV['DEBUG']
+
+    # Remove markdown code blocks if present
+    content = content.gsub(/```json\s*/, '').gsub(/```\s*$/, '') if content.include?('```')
+
+    json_match = content.match(/\{.*\}/m)
+
+    if json_match
+      begin
+        parsed = JSON.parse(json_match[0])
+        {
+          insider_language: {
+            has_insider_language: parsed['has_insider_language'] || false,
+            insider_phrases: parsed['insider_phrases'] || [],
+            category_insight: parsed['category_insight'],
+            marketing_implications: parsed['marketing_implications']
+          },
+          llm_model: model
+        }
+      rescue JSON::ParserError
+        { insider_language: {}, llm_model: model }
+      end
+    else
+      { insider_language: {}, llm_model: model }
+    end
   end
 end

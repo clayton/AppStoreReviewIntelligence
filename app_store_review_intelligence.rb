@@ -17,10 +17,15 @@ ActiveRecord::Base.establish_connection(
 require_relative 'models/app'
 require_relative 'models/review'
 require_relative 'models/analysis'
+require_relative 'models/screenshot_analysis'
+require_relative 'models/aso_analysis'
 
 # Load lib files
 require_relative 'lib/review_aggregator'
 require_relative 'lib/llm_analyzer'
+require_relative 'lib/persona_extractor'
+require_relative 'lib/app_store_metadata'
+require_relative 'lib/aso_analyzer'
 
 class AppStoreReviewIntelligenceCLI < Thor
   desc "analyze KEYWORD", "Analyze all reviews for top apps matching KEYWORD (negative + positive)"
@@ -29,6 +34,8 @@ class AppStoreReviewIntelligenceCLI < Thor
   option :model, type: :string, default: LLMAnalyzer::DEFAULT_MODEL, desc: "OpenRouter model to use"
   option :force, type: :boolean, default: false, desc: "Force fresh fetch of reviews"
   option :simple, type: :boolean, default: false, desc: "Generate additional simplified summary"
+  option :aso, type: :boolean, default: false, desc: "Include ASO recommendations for your app"
+  option :my_app_id, type: :string, desc: "Your app's App Store ID for ASO analysis"
   def analyze(keyword)
     ensure_api_key!
     
@@ -60,7 +67,7 @@ class AppStoreReviewIntelligenceCLI < Thor
     
     if recent_analysis && !options[:force]
       puts "\n📋 Using cached analysis from #{recent_analysis.created_at.strftime('%Y-%m-%d %H:%M')}"
-      
+
       # Extract comprehensive analysis data from cached result
       begin
         json_match = recent_analysis.llm_analysis.match(/\{.*\}/m)
@@ -75,7 +82,10 @@ class AppStoreReviewIntelligenceCLI < Thor
             summary: parsed['summary'] || extract_summary_from_analysis(recent_analysis),
             total_low_reviews_analyzed: parsed['total_low_reviews_analyzed'] || 0,
             total_high_reviews_analyzed: parsed['total_high_reviews_analyzed'] || 0,
-            llm_model: recent_analysis.llm_model
+            llm_model: recent_analysis.llm_model,
+            personas: recent_analysis.personas || [],
+            raw_persona_extractions: recent_analysis.raw_persona_extractions || [],
+            insider_language: recent_analysis.insider_language || {}
           }
         else
           # Fallback for malformed cache
@@ -88,7 +98,10 @@ class AppStoreReviewIntelligenceCLI < Thor
             summary: extract_summary_from_analysis(recent_analysis),
             total_low_reviews_analyzed: 0,
             total_high_reviews_analyzed: 0,
-            llm_model: recent_analysis.llm_model
+            llm_model: recent_analysis.llm_model,
+            personas: recent_analysis.personas || [],
+            raw_persona_extractions: recent_analysis.raw_persona_extractions || [],
+            insider_language: recent_analysis.insider_language || {}
           }
         end
       rescue JSON::ParserError
@@ -102,7 +115,10 @@ class AppStoreReviewIntelligenceCLI < Thor
           summary: extract_summary_from_analysis(recent_analysis),
           total_low_reviews_analyzed: 0,
           total_high_reviews_analyzed: 0,
-          llm_model: recent_analysis.llm_model
+          llm_model: recent_analysis.llm_model,
+          personas: recent_analysis.personas || [],
+          raw_persona_extractions: recent_analysis.raw_persona_extractions || [],
+          insider_language: recent_analysis.insider_language || {}
         }
       end
     else
@@ -110,12 +126,35 @@ class AppStoreReviewIntelligenceCLI < Thor
       puts "\n🤖 Analyzing reviews with AI..."
       analyzer = LLMAnalyzer.new
       analysis = analyzer.analyze_all_reviews(result[:low_reviews], result[:high_reviews], keyword, options[:model])
-      
+
       if analysis[:error]
         puts "\n❌ Analysis failed: #{analysis[:error]}"
         exit 1
       end
-      
+
+      # Extract and analyze personas
+      all_reviews = result[:low_reviews] + result[:high_reviews]
+      puts "\n👤 Identifying user personas..."
+      persona_extractor = PersonaExtractor.new
+      raw_personas = persona_extractor.extract_from_reviews(all_reviews)
+
+      if raw_personas[:raw_matches].any?
+        puts "   Found #{raw_personas[:raw_matches].length} unique persona phrases"
+        puts "   Normalizing with AI..."
+        normalized_personas = analyzer.normalize_personas(raw_personas[:raw_matches], keyword, options[:model])
+        analysis[:personas] = normalized_personas[:personas] || []
+        analysis[:raw_persona_extractions] = raw_personas[:raw_matches]
+      else
+        puts "   No persona phrases found in reviews"
+        analysis[:personas] = []
+        analysis[:raw_persona_extractions] = []
+      end
+
+      # Analyze insider language
+      puts "\n🗣️ Analyzing insider language..."
+      insider_result = analyzer.analyze_insider_language(all_reviews, keyword, options[:model])
+      analysis[:insider_language] = insider_result[:insider_language] || {}
+
       # Save analysis
       save_comprehensive_analysis(keyword, analysis)
     end
@@ -128,6 +167,11 @@ class AppStoreReviewIntelligenceCLI < Thor
       puts "\n🔄 Generating simplified summary..."
       simple_summary = generate_simple_summary(analysis, options[:model])
       display_simple_summary(simple_summary) if simple_summary
+    end
+
+    # Run ASO analysis if requested
+    if options[:aso]
+      run_aso_analysis(keyword, options[:my_app_id], result[:apps], options[:model], options[:force], options[:country])
     end
   end
   
@@ -399,6 +443,9 @@ class AppStoreReviewIntelligenceCLI < Thor
       llm_analysis: analysis[:llm_analysis],
       patterns: analysis[:pain_points] || analysis[:patterns] || [],
       opportunities: analysis[:differentiators] || analysis[:opportunities] || [],
+      personas: analysis[:personas] || [],
+      raw_persona_extractions: analysis[:raw_persona_extractions] || [],
+      insider_language: analysis[:insider_language] || {},
       total_reviews_analyzed: (analysis[:total_low_reviews_analyzed] || 0) + (analysis[:total_high_reviews_analyzed] || 0),
       llm_model: analysis[:llm_model]
     )
@@ -484,7 +531,58 @@ class AppStoreReviewIntelligenceCLI < Thor
         puts "   Rationale: #{diff['rationale']}" if diff['rationale']
       end
     end
-    
+
+    # Display personas
+    if analysis[:personas] && analysis[:personas].any?
+      puts "\n👤 Target User Personas (identified from reviews):"
+      analysis[:personas].each_with_index do |persona, index|
+        category = persona['category'] || persona[:category]
+        count = persona['count'] || persona[:count]
+        description = persona['description'] || persona[:description]
+        examples = persona['examples'] || persona[:examples] || []
+
+        puts "\n#{index + 1}. #{category} (mentioned #{count} times)"
+        puts "   #{description}" if description
+        if examples.any?
+          puts "   Examples: #{examples.first(5).map { |e| "\"#{e}\"" }.join(', ')}"
+        end
+      end
+    end
+
+    # Display insider language
+    if analysis[:insider_language] && analysis[:insider_language].any?
+      insider = analysis[:insider_language]
+      has_insider = insider['has_insider_language'] || insider[:has_insider_language]
+      phrases = insider['insider_phrases'] || insider[:insider_phrases] || []
+      category_insight = insider['category_insight'] || insider[:category_insight]
+      marketing_implications = insider['marketing_implications'] || insider[:marketing_implications]
+
+      puts "\n🗣️ Insider Language & Phrases:"
+
+      if has_insider && phrases.any?
+        phrases.each_with_index do |phrase_data, index|
+          phrase = phrase_data['phrase'] || phrase_data[:phrase]
+          type = phrase_data['type'] || phrase_data[:type]
+          context = phrase_data['context'] || phrase_data[:context]
+          frequency = phrase_data['frequency'] || phrase_data[:frequency]
+
+          puts "\n#{index + 1}. \"#{phrase}\" [#{type}]"
+          puts "   #{context}" if context
+          puts "   Frequency: #{frequency}" if frequency
+        end
+      else
+        puts "\n   No strong insider language detected."
+      end
+
+      if category_insight
+        puts "\n   Category Insight: #{category_insight}"
+      end
+
+      if marketing_implications
+        puts "\n   Marketing Implications: #{marketing_implications}"
+      end
+    end
+
     # Display competitive summary
     if analysis[:competitive_summary] && analysis[:competitive_summary].any?
       puts "\n🎯 Competitive Positioning Summary:"
@@ -510,6 +608,242 @@ class AppStoreReviewIntelligenceCLI < Thor
     puts "High-rating reviews analyzed: #{analysis[:total_high_reviews_analyzed] || 0}"
     puts "Total reviews analyzed: #{(analysis[:total_low_reviews_analyzed] || 0) + (analysis[:total_high_reviews_analyzed] || 0)}"
     puts "Model used: #{analysis[:llm_model]}"
+  end
+
+  def run_aso_analysis(keyword, user_app_id, competitor_apps, model, force, country)
+    if user_app_id.nil? || user_app_id.empty?
+      puts "\n❌ Error: --my-app-id is required for ASO analysis"
+      puts "Usage: ./app_store_review_intelligence.rb analyze \"keyword\" --aso --my-app-id=123456789"
+      return
+    end
+
+    puts "\n🎯 Starting App Store Optimization Analysis..."
+    puts "=" * 50
+
+    # Find or create app record for user's app
+    user_app = find_or_fetch_user_app(user_app_id, keyword)
+
+    unless user_app
+      puts "❌ Error: Could not fetch your app details for ID: #{user_app_id}"
+      return
+    end
+
+    puts "📱 Your app: #{user_app.name}"
+
+    # Check for cached analysis
+    unless force
+      recent_analysis = find_recent_aso_analysis(user_app, keyword, competitor_apps.length)
+      if recent_analysis
+        puts "📋 Using cached ASO analysis from #{recent_analysis.created_at.strftime('%Y-%m-%d %H:%M')}"
+        display_aso_analysis(recent_analysis)
+        return
+      end
+    end
+
+    # Fetch metadata from web pages
+    puts "🌐 Scraping App Store metadata..."
+    metadata_fetcher = AppStoreMetadata.new(country: country)
+
+    # Get user's app web metadata
+    user_web_metadata = metadata_fetcher.fetch_metadata(user_app_id)
+
+    # Get competitor web metadata
+    competitor_app_ids = competitor_apps.map(&:app_id)
+    competitor_web_metadata = metadata_fetcher.fetch_all_metadata(competitor_app_ids)
+
+    # Build combined metadata
+    user_metadata = build_app_metadata(user_app, user_web_metadata)
+    competitor_metadata = competitor_apps.map.with_index do |app, index|
+      web_data = competitor_web_metadata[app.app_id] || {}
+      build_app_metadata(app, web_data).merge(rank: index + 1)
+    end
+
+    # Run LLM analysis
+    puts "🤖 Analyzing with #{model}..."
+    analyzer = AsoAnalyzer.new
+    result = analyzer.analyze(user_metadata, competitor_metadata, keyword, model)
+
+    if result[:error]
+      puts "❌ ASO analysis failed: #{result[:error]}"
+      return
+    end
+
+    # Save analysis
+    aso_analysis = AsoAnalysis.create!(
+      app: user_app,
+      keyword: keyword,
+      competitor_count: competitor_apps.length,
+      competitor_app_ids: competitor_app_ids,
+      llm_analysis: result[:llm_analysis],
+      recommendations: result[:recommendations],
+      llm_model: result[:llm_model]
+    )
+
+    puts "✅ ASO analysis saved"
+    display_aso_analysis(aso_analysis)
+  end
+
+  def find_or_fetch_user_app(app_id, keyword)
+    # Check if we have the app cached
+    existing = App.find_by(app_id: app_id)
+    return existing if existing
+
+    # Fetch from iTunes API
+    puts "   Fetching your app from iTunes..."
+    itunes_url = "https://itunes.apple.com/lookup?id=#{app_id}"
+
+    begin
+      response = HTTParty.get(itunes_url, timeout: 10)
+      return nil unless response.success?
+
+      data = response.parsed_response
+      data = JSON.parse(data) if data.is_a?(String)
+
+      app_info = data.dig('results', 0)
+      return nil unless app_info
+
+      App.create!(
+        app_id: app_id,
+        name: app_info['trackName'],
+        developer: app_info['artistName'],
+        bundle_id: app_info['bundleId'],
+        price: app_info['price'],
+        currency: app_info['currency'],
+        average_rating: app_info['averageUserRating'],
+        rating_count: app_info['userRatingCount'],
+        version: app_info['version'],
+        description: app_info['description'],
+        icon_url: app_info['artworkUrl512'] || app_info['artworkUrl100'],
+        keyword: keyword,
+        search_rank: 0 # User's app, not from search results
+      )
+    rescue => e
+      puts "Warning: Failed to fetch app #{app_id}: #{e.message}" if ENV['DEBUG']
+      nil
+    end
+  end
+
+  def build_app_metadata(app, web_metadata)
+    {
+      name: app.name,
+      subtitle: web_metadata[:subtitle],
+      promotional_text: web_metadata[:promotional_text],
+      description: app.description,
+      category: nil,
+      rating: app.average_rating,
+      rating_count: app.rating_count
+    }
+  end
+
+  def find_recent_aso_analysis(user_app, keyword, current_competitor_count)
+    recent = AsoAnalysis.where(app: user_app, keyword: keyword)
+                        .where('created_at > ?', 7.days.ago)
+                        .order(created_at: :desc)
+                        .first
+
+    return nil unless recent
+
+    # Check if competitor count changed significantly (>20%)
+    stored_count = recent.competitor_count
+    return recent if stored_count == 0
+
+    diff_percentage = ((current_competitor_count - stored_count).abs.to_f / stored_count) * 100
+    diff_percentage <= 20 ? recent : nil
+  end
+
+  def display_aso_analysis(analysis)
+    recs = analysis.recommendations || {}
+
+    puts "\n" + "=" * 60
+    puts "🎯 APP STORE OPTIMIZATION RECOMMENDATIONS"
+    puts "=" * 60
+    puts "Keyword: #{analysis.keyword}"
+    puts "Competitors analyzed: #{analysis.competitor_count}"
+    puts "Model: #{analysis.llm_model}"
+    puts "Generated: #{analysis.created_at.strftime('%Y-%m-%d %H:%M')}"
+
+    if recs['name_recommendations']
+      puts "\n📛 NAME OPTIMIZATION"
+      puts "-" * 40
+      puts "Analysis: #{recs['name_recommendations']['current_analysis']}"
+      if recs['name_recommendations']['suggestions']&.any?
+        puts "\nSuggestions:"
+        recs['name_recommendations']['suggestions'].each_with_index { |s, i| puts "  #{i + 1}. #{s}" }
+      end
+      if recs['name_recommendations']['keywords_to_include']&.any?
+        puts "\nKeywords to include: #{recs['name_recommendations']['keywords_to_include'].join(', ')}"
+      end
+    end
+
+    if recs['subtitle_recommendations']
+      puts "\n📝 SUBTITLE OPTIMIZATION"
+      puts "-" * 40
+      puts "Analysis: #{recs['subtitle_recommendations']['current_analysis']}"
+      if recs['subtitle_recommendations']['suggested_subtitles']&.any?
+        puts "\nSuggested subtitles (max 30 chars):"
+        recs['subtitle_recommendations']['suggested_subtitles'].each_with_index do |s, i|
+          char_count = s&.length || 0
+          puts "  #{i + 1}. \"#{s}\" (#{char_count} chars)"
+        end
+      end
+      puts "\nCompetitor patterns: #{recs['subtitle_recommendations']['competitor_patterns']}" if recs['subtitle_recommendations']['competitor_patterns']
+    end
+
+    if recs['promotional_text_recommendations']
+      puts "\n📣 PROMOTIONAL TEXT"
+      puts "-" * 40
+      puts "Analysis: #{recs['promotional_text_recommendations']['current_analysis']}"
+      if recs['promotional_text_recommendations']['suggested_text']
+        puts "\nSuggested text (max 170 chars):"
+        puts "  \"#{recs['promotional_text_recommendations']['suggested_text']}\""
+      end
+      if recs['promotional_text_recommendations']['key_themes']&.any?
+        puts "\nKey themes: #{recs['promotional_text_recommendations']['key_themes'].join(', ')}"
+      end
+    end
+
+    if recs['keyword_recommendations']
+      puts "\n🔑 KEYWORD STRATEGY"
+      puts "-" * 40
+      kr = recs['keyword_recommendations']
+      puts "Primary keywords: #{kr['primary_keywords']&.join(', ')}" if kr['primary_keywords']&.any?
+      puts "Secondary keywords: #{kr['secondary_keywords']&.join(', ')}" if kr['secondary_keywords']&.any?
+      puts "Competitor keywords: #{kr['competitor_keywords']&.join(', ')}" if kr['competitor_keywords']&.any?
+      puts "Gap keywords (opportunities): #{kr['gap_keywords']&.join(', ')}" if kr['gap_keywords']&.any?
+    end
+
+    if recs['description_recommendations']
+      puts "\n📄 DESCRIPTION OPTIMIZATION"
+      puts "-" * 40
+      puts "Analysis: #{recs['description_recommendations']['current_analysis']}"
+      if recs['description_recommendations']['suggested_opening']
+        puts "\nSuggested opening paragraph:"
+        puts "  #{recs['description_recommendations']['suggested_opening']}"
+      end
+      if recs['description_recommendations']['key_features_to_highlight']&.any?
+        puts "\nKey features to highlight:"
+        recs['description_recommendations']['key_features_to_highlight'].each { |f| puts "  - #{f}" }
+      end
+      if recs['description_recommendations']['keyword_placement_tips']
+        puts "\nKeyword placement: #{recs['description_recommendations']['keyword_placement_tips']}"
+      end
+    end
+
+    if recs['competitive_summary']
+      puts "\n🏆 COMPETITIVE SUMMARY"
+      puts "-" * 40
+      puts "Your position: #{recs['competitive_summary']['your_current_position']}"
+      if recs['competitive_summary']['top_3_priorities']&.any?
+        puts "\nTop 3 Priorities:"
+        recs['competitive_summary']['top_3_priorities'].each_with_index { |p, i| puts "  #{i + 1}. #{p}" }
+      end
+      if recs['competitive_summary']['unique_angles']&.any?
+        puts "\nUnique positioning angles:"
+        recs['competitive_summary']['unique_angles'].each { |a| puts "  - #{a}" }
+      end
+    end
+
+    puts "\n" + "=" * 60
   end
 end
 
