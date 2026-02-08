@@ -2,7 +2,7 @@ require 'open_router'
 require 'json'
 
 class LLMAnalyzer
-  DEFAULT_MODEL = 'google/gemini-3-pro-preview'
+  DEFAULT_MODEL = 'google/gemini-3-flash-preview'
   
   def initialize
     @client = OpenRouter::Client.new(
@@ -308,7 +308,14 @@ class LLMAnalyzer
       3. Synthesize both to determine:
          - Top 3 "Table Stakes" features: What you need to fit in (baseline expectations)
          - Top 3 "Differentiators": What you need to stand out (unmet needs/opportunities)
-      
+
+      4. Extract potential keywords for ad campaigns and App Store Optimization (ASO):
+         - Pull exact phrases and terms users naturally use when describing what they want, what they searched for, or what problems they're trying to solve
+         - Identify high-intent keywords (phrases indicating someone is actively looking for a solution)
+         - Identify feature-based keywords (specific capabilities users mention)
+         - Suggest negative keywords (terms to exclude from ad campaigns because they attract the wrong audience)
+         - Note the natural language users use - these are often better ad keywords than industry jargon
+
       LOW-RATING REVIEWS (1-2 stars):
       
       #{low_reviews_text}
@@ -344,6 +351,25 @@ class LLMAnalyzer
         "competitive_summary": {
           "top_3_table_stakes": ["Feature 1", "Feature 2", "Feature 3"],
           "top_3_differentiators": ["Differentiator 1", "Differentiator 2", "Differentiator 3"]
+        },
+        "keyword_opportunities": {
+          "high_intent_keywords": [
+            {
+              "keyword": "exact phrase from reviews",
+              "intent": "What this signals about the user's goal",
+              "source": "Whether from pain point, feature request, or praise"
+            }
+          ],
+          "feature_keywords": [
+            {
+              "keyword": "feature or capability term",
+              "frequency": "How often this concept appears across reviews",
+              "ad_angle": "How to position this in ad copy"
+            }
+          ],
+          "long_tail_phrases": ["longer natural phrases users write that could be search queries"],
+          "negative_keywords": ["terms to exclude from ad campaigns and why"],
+          "aso_tags": ["concise single or two-word terms optimized for App Store keyword field"]
         }
       }
     PROMPT
@@ -482,6 +508,7 @@ class LLMAnalyzer
           pain_points: analysis['pain_points'] || [],
           differentiators: analysis['differentiators'] || [],
           competitive_summary: analysis['competitive_summary'] || {},
+          keyword_opportunities: analysis['keyword_opportunities'] || {},
           summary: analysis['summary'],
           total_low_reviews_analyzed: low_review_count,
           total_high_reviews_analyzed: high_review_count,
@@ -495,6 +522,7 @@ class LLMAnalyzer
           pain_points: [],
           differentiators: [],
           competitive_summary: {},
+          keyword_opportunities: {},
           total_low_reviews_analyzed: low_review_count,
           total_high_reviews_analyzed: high_review_count,
           llm_model: model
@@ -507,6 +535,7 @@ class LLMAnalyzer
         pain_points: [],
         differentiators: [],
         competitive_summary: {},
+        keyword_opportunities: {},
         total_low_reviews_analyzed: low_review_count,
         total_high_reviews_analyzed: high_review_count,
         llm_model: model

@@ -26,6 +26,7 @@ require_relative 'lib/llm_analyzer'
 require_relative 'lib/persona_extractor'
 require_relative 'lib/app_store_metadata'
 require_relative 'lib/aso_analyzer'
+require_relative 'lib/keyword_extractor'
 
 class AppStoreReviewIntelligenceCLI < Thor
   desc "analyze KEYWORD", "Analyze all reviews for top apps matching KEYWORD (negative + positive)"
@@ -36,6 +37,7 @@ class AppStoreReviewIntelligenceCLI < Thor
   option :simple, type: :boolean, default: false, desc: "Generate additional simplified summary"
   option :aso, type: :boolean, default: false, desc: "Include ASO recommendations for your app"
   option :my_app_id, type: :string, desc: "Your app's App Store ID for ASO analysis"
+  option :keywords, type: :boolean, default: false, desc: "Extract competitor keyword intelligence"
   def analyze(keyword)
     ensure_api_key!
     
@@ -79,6 +81,7 @@ class AppStoreReviewIntelligenceCLI < Thor
             pain_points: parsed['pain_points'] || recent_analysis.patterns || [],
             differentiators: parsed['differentiators'] || recent_analysis.opportunities || [],
             competitive_summary: parsed['competitive_summary'] || {},
+            keyword_opportunities: parsed['keyword_opportunities'] || recent_analysis.keyword_opportunities || {},
             summary: parsed['summary'] || extract_summary_from_analysis(recent_analysis),
             total_low_reviews_analyzed: parsed['total_low_reviews_analyzed'] || 0,
             total_high_reviews_analyzed: parsed['total_high_reviews_analyzed'] || 0,
@@ -95,6 +98,7 @@ class AppStoreReviewIntelligenceCLI < Thor
             pain_points: recent_analysis.patterns || [],
             differentiators: recent_analysis.opportunities || [],
             competitive_summary: {},
+            keyword_opportunities: recent_analysis.keyword_opportunities || {},
             summary: extract_summary_from_analysis(recent_analysis),
             total_low_reviews_analyzed: 0,
             total_high_reviews_analyzed: 0,
@@ -112,6 +116,7 @@ class AppStoreReviewIntelligenceCLI < Thor
           pain_points: recent_analysis.patterns || [],
           differentiators: recent_analysis.opportunities || [],
           competitive_summary: {},
+          keyword_opportunities: recent_analysis.keyword_opportunities || {},
           summary: extract_summary_from_analysis(recent_analysis),
           total_low_reviews_analyzed: 0,
           total_high_reviews_analyzed: 0,
@@ -172,6 +177,11 @@ class AppStoreReviewIntelligenceCLI < Thor
     # Run ASO analysis if requested
     if options[:aso]
       run_aso_analysis(keyword, options[:my_app_id], result[:apps], options[:model], options[:force], options[:country])
+    end
+
+    # Run keyword extraction if requested
+    if options[:keywords]
+      run_keyword_extraction(keyword, result[:apps], options)
     end
   end
   
@@ -318,6 +328,26 @@ class AppStoreReviewIntelligenceCLI < Thor
       end
     end
     
+    # Add keyword opportunities
+    if analysis[:keyword_opportunities] && analysis[:keyword_opportunities].any?
+      kw = analysis[:keyword_opportunities]
+
+      high_intent = kw['high_intent_keywords'] || kw[:high_intent_keywords] || []
+      if high_intent.any?
+        research_text += "HIGH-INTENT KEYWORDS (from user reviews):\n"
+        high_intent.each_with_index do |k, index|
+          keyword_text = k['keyword'] || k[:keyword]
+          research_text += "#{index + 1}. \"#{keyword_text}\"\n"
+        end
+        research_text += "\n"
+      end
+
+      aso_tags = kw['aso_tags'] || kw[:aso_tags] || []
+      if aso_tags.any?
+        research_text += "ASO TAGS: #{aso_tags.join(', ')}\n\n"
+      end
+    end
+
     research_text
   end
   
@@ -446,6 +476,7 @@ class AppStoreReviewIntelligenceCLI < Thor
       personas: analysis[:personas] || [],
       raw_persona_extractions: analysis[:raw_persona_extractions] || [],
       insider_language: analysis[:insider_language] || {},
+      keyword_opportunities: analysis[:keyword_opportunities] || {},
       total_reviews_analyzed: (analysis[:total_low_reviews_analyzed] || 0) + (analysis[:total_high_reviews_analyzed] || 0),
       llm_model: analysis[:llm_model]
     )
@@ -580,6 +611,60 @@ class AppStoreReviewIntelligenceCLI < Thor
 
       if marketing_implications
         puts "\n   Marketing Implications: #{marketing_implications}"
+      end
+    end
+
+    # Display keyword opportunities
+    if analysis[:keyword_opportunities] && analysis[:keyword_opportunities].any?
+      kw = analysis[:keyword_opportunities]
+
+      puts "\n🔑 Keyword Opportunities (from review language):"
+
+      high_intent = kw['high_intent_keywords'] || kw[:high_intent_keywords] || []
+      if high_intent.any?
+        puts "\n   HIGH-INTENT KEYWORDS:"
+        high_intent.each_with_index do |k, index|
+          keyword_text = k['keyword'] || k[:keyword]
+          intent = k['intent'] || k[:intent]
+          source = k['source'] || k[:source]
+          puts "   #{index + 1}. \"#{keyword_text}\""
+          puts "      Intent: #{intent}" if intent
+          puts "      Source: #{source}" if source
+        end
+      end
+
+      feature_kw = kw['feature_keywords'] || kw[:feature_keywords] || []
+      if feature_kw.any?
+        puts "\n   FEATURE KEYWORDS:"
+        feature_kw.each_with_index do |k, index|
+          keyword_text = k['keyword'] || k[:keyword]
+          frequency = k['frequency'] || k[:frequency]
+          ad_angle = k['ad_angle'] || k[:ad_angle]
+          puts "   #{index + 1}. \"#{keyword_text}\""
+          puts "      Frequency: #{frequency}" if frequency
+          puts "      Ad angle: #{ad_angle}" if ad_angle
+        end
+      end
+
+      long_tail = kw['long_tail_phrases'] || kw[:long_tail_phrases] || []
+      if long_tail.any?
+        puts "\n   LONG-TAIL PHRASES:"
+        long_tail.each_with_index do |phrase, index|
+          puts "   #{index + 1}. \"#{phrase}\""
+        end
+      end
+
+      negative = kw['negative_keywords'] || kw[:negative_keywords] || []
+      if negative.any?
+        puts "\n   NEGATIVE KEYWORDS (exclude from campaigns):"
+        negative.each_with_index do |term, index|
+          puts "   #{index + 1}. #{term}"
+        end
+      end
+
+      aso_tags = kw['aso_tags'] || kw[:aso_tags] || []
+      if aso_tags.any?
+        puts "\n   ASO TAGS: #{aso_tags.join(', ')}"
       end
     end
 
@@ -840,6 +925,124 @@ class AppStoreReviewIntelligenceCLI < Thor
       if recs['competitive_summary']['unique_angles']&.any?
         puts "\nUnique positioning angles:"
         recs['competitive_summary']['unique_angles'].each { |a| puts "  - #{a}" }
+      end
+    end
+
+    puts "\n" + "=" * 60
+  end
+
+  def run_keyword_extraction(keyword, competitor_apps, options)
+    puts "\n🔑 Starting Competitor Keyword Extraction..."
+    puts "=" * 60
+
+    # Fetch web metadata for all competitor apps
+    puts "🌐 Scraping App Store metadata for #{competitor_apps.length} apps..."
+    metadata_fetcher = AppStoreMetadata.new(country: options[:country])
+    competitor_app_ids = competitor_apps.map(&:app_id)
+    web_metadata = metadata_fetcher.fetch_all_metadata(competitor_app_ids)
+
+    # Build metadata hash per app
+    apps_metadata = competitor_apps.map.with_index do |app, index|
+      web_data = web_metadata[app.app_id] || {}
+      {
+        name: app.name,
+        subtitle: web_data[:subtitle],
+        description: app.description,
+        rating: app.average_rating,
+        rating_count: app.rating_count,
+        rank: index + 1
+      }
+    end
+
+    # Run keyword extraction via LLM
+    puts "🤖 Extracting keyword intelligence with #{options[:model]}..."
+    extractor = KeywordExtractor.new
+    result = extractor.extract(apps_metadata, keyword, options[:model])
+
+    if result[:error]
+      puts "❌ Keyword extraction failed: #{result[:error]}"
+      return
+    end
+
+    display_keyword_analysis(result, keyword)
+  end
+
+  def display_keyword_analysis(result, keyword)
+    puts "\n" + "=" * 60
+    puts "🔑 COMPETITOR KEYWORD ANALYSIS"
+    puts "=" * 60
+    puts "Keyword: \"#{keyword}\""
+    puts "Apps analyzed: #{result[:app_count]}"
+    puts "Model: #{result[:llm_model]}"
+
+    # High-frequency keywords
+    if result[:high_frequency_keywords]&.any?
+      puts "\n📊 HIGH-FREQUENCY KEYWORDS (table stakes):"
+      puts "-" * 40
+      result[:high_frequency_keywords].each_with_index do |kw, i|
+        keyword_text = kw['keyword']
+        count = kw['competitor_count']
+        total = kw['total_competitors']
+        puts "  #{i + 1}. \"#{keyword_text}\" - #{count}/#{total} apps"
+      end
+    end
+
+    # Title keywords
+    if result[:title_keywords]&.any?
+      puts "\n📛 TITLE KEYWORDS:"
+      puts "-" * 40
+      max_name_len = result[:title_keywords].map { |tk| (tk['app_name'] || '').length }.max
+      max_name_len = [max_name_len || 0, 20].max
+      printf "  %-#{max_name_len}s | %s\n", "App Name", "Keywords in Title"
+      printf "  %-#{max_name_len}s-+-%s\n", "-" * max_name_len, "-" * 30
+      result[:title_keywords].each do |tk|
+        printf "  %-#{max_name_len}s | %s\n", tk['app_name'], (tk['keywords'] || []).join(', ')
+      end
+    end
+
+    # Subtitle keywords
+    if result[:subtitle_keywords]&.any?
+      puts "\n📝 SUBTITLE KEYWORDS:"
+      puts "-" * 40
+      result[:subtitle_keywords].each do |sk|
+        next unless sk['subtitle']
+        puts "  #{sk['app_name']}"
+        puts "    Subtitle: \"#{sk['subtitle']}\""
+        puts "    Keywords: #{(sk['keywords'] || []).join(', ')}"
+      end
+    end
+
+    # Description keywords
+    if result[:description_keywords]&.any?
+      puts "\n📄 DESCRIPTION KEYWORDS:"
+      puts "-" * 40
+      result[:description_keywords].each_with_index do |dk, i|
+        puts "  #{i + 1}. \"#{dk['keyword']}\" - #{dk['competitor_count']} competitors"
+        puts "     #{dk['context']}" if dk['context']
+      end
+    end
+
+    # Keyword gaps / opportunities
+    if result[:keyword_gaps]&.any?
+      puts "\n🎯 KEYWORD OPPORTUNITIES (low competition):"
+      puts "-" * 40
+      result[:keyword_gaps].each_with_index do |gap, i|
+        used_by = gap['used_by'] || []
+        puts "  #{i + 1}. \"#{gap['keyword']}\" - only used by #{gap['used_by_count']} competitor#{'s' if gap['used_by_count'] != 1}"
+        puts "     Used by: #{used_by.join(', ')}" if used_by.any?
+        puts "     #{gap['opportunity_note']}" if gap['opportunity_note']
+      end
+    end
+
+    # Suggested keyword field
+    if result[:suggested_keyword_field]&.any?
+      skf = result[:suggested_keyword_field]
+      puts "\n💡 SUGGESTED KEYWORD FIELD (100 chars max):"
+      puts "-" * 40
+      if skf['keywords']
+        puts "  \"#{skf['keywords']}\""
+        puts "  Characters: #{skf['character_count'] || skf['keywords'].length}/100"
+        puts "  Rationale: #{skf['rationale']}" if skf['rationale']
       end
     end
 

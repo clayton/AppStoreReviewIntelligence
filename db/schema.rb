@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.0].define(version: 2025_12_28_130000) do
+ActiveRecord::Schema[8.0].define(version: 2026_02_07_120000) do
   create_table "analyses", force: :cascade do |t|
     t.string "keyword", null: false
     t.text "llm_analysis"
@@ -23,6 +23,7 @@ ActiveRecord::Schema[8.0].define(version: 2025_12_28_130000) do
     t.json "personas", default: []
     t.json "raw_persona_extractions", default: []
     t.json "insider_language", default: {}
+    t.json "keyword_opportunities", default: {}
     t.index ["created_at"], name: "index_analyses_on_created_at"
     t.index ["keyword"], name: "index_analyses_on_keyword"
   end
