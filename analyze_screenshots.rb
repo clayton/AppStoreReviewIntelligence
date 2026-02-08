@@ -111,6 +111,73 @@ class ScreenshotAnalysisCLI < Thor
     puts "✓ Screenshot analysis complete!"
   end
   
+  desc "compare COMPETITOR_PATH YOUR_PATH", "Compare your screenshots against competitor screenshots"
+  option :competitor_name, type: :string, default: "Competitor", desc: "Name of the competitor app"
+  def compare(competitor_path, local_path)
+    ensure_api_key!
+
+    # Validate competitor path exists
+    unless File.directory?(competitor_path)
+      puts "\n[ERROR] Competitor path does not exist or is not a directory: #{competitor_path}"
+      exit 1
+    end
+
+    # Validate local path exists
+    unless File.directory?(local_path)
+      puts "\n[ERROR] Your screenshots path does not exist or is not a directory: #{local_path}"
+      exit 1
+    end
+
+    puts "\n[COMPARE] Screenshot Comparison Analysis"
+    puts "=" * 50
+    puts "Competitor: #{options[:competitor_name]}"
+    puts "Competitor Screenshots: #{competitor_path}"
+    puts "Your Screenshots: #{local_path}"
+    puts
+
+    @analyzer = ScreenshotAnalyzer.new
+
+    # Load competitor screenshots
+    puts "[FOLDER] Loading competitor screenshots..."
+    competitor_screenshots = @analyzer.load_local_screenshots(competitor_path)
+
+    if competitor_screenshots.empty?
+      puts "\n[ERROR] No image files found in #{competitor_path}"
+      puts "Supported formats: .png, .jpg, .jpeg"
+      exit 1
+    end
+
+    puts "[OK] Found #{competitor_screenshots.length} competitor screenshots"
+
+    # Load local screenshots
+    puts "\n[FOLDER] Loading your screenshots..."
+    local_screenshots = @analyzer.load_local_screenshots(local_path)
+
+    if local_screenshots.empty?
+      puts "\n[ERROR] No image files found in #{local_path}"
+      puts "Supported formats: .png, .jpg, .jpeg"
+      exit 1
+    end
+
+    puts "[OK] Found #{local_screenshots.length} of your screenshots"
+
+    # Run comparison analysis
+    puts "\n[AI] Analyzing with #{ScreenshotAnalyzer::DEFAULT_MODEL}..."
+    result = @analyzer.compare_local_screenshots(
+      options[:competitor_name],
+      competitor_screenshots,
+      local_screenshots
+    )
+
+    if result.nil?
+      puts "\n[ERROR] Analysis failed"
+      exit 1
+    end
+
+    # Display results
+    display_comparison_result(result)
+  end
+
   desc "history KEYWORD", "Show past screenshot analyses for KEYWORD"
   def history(keyword)
     apps = App.where(keyword: keyword)
@@ -210,6 +277,24 @@ class ScreenshotAnalysisCLI < Thor
     puts "\n📊 Analysis Results:"
     puts "Screenshots analyzed: #{analysis.screenshot_count}"
     puts "\n#{analysis.analysis}"
+  end
+
+  def parse_app_store_url(url)
+    match = url.match(/id(\d+)/)
+    match ? match[1] : nil
+  end
+
+  def display_comparison_result(result)
+    puts "\n" + "=" * 50
+    puts "[RESULTS] SCREENSHOT COMPARISON"
+    puts "=" * 50
+    puts "Competitor: #{result[:competitor_name]}"
+    puts "Competitor screenshots: #{result[:competitor_screenshot_count]}"
+    puts "Your screenshots: #{result[:local_screenshot_count]}"
+    puts "Model: #{result[:llm_model]}"
+    puts "=" * 50
+    puts "\n#{result[:analysis]}"
+    puts "\n" + "=" * 50
   end
 end
 
